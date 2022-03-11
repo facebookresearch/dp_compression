@@ -1,0 +1,37 @@
+diff --git a/private_prediction.py b/private_prediction.py
+index b17a549..3d55695 100644
+--- a/private_prediction.py
++++ b/private_prediction.py
+@@ -79,11 +79,11 @@ def get_b_function(epsilon, delta, supremum=True):
+     gaussian = torch.distributions.normal.Normal(0, 1)
+ 
+     def b_function(v):
+-        term = math.exp(epsilon) * gaussian.cdf(-math.sqrt(epsilon * (v + 2)))
++        term = math.exp(epsilon) * gaussian.cdf(-math.sqrt(epsilon * (v + 2)) * torch.ones(1))
+         if supremum:
+-            return gaussian.cdf(math.sqrt(epsilon * v)) - term
++            return gaussian.cdf(math.sqrt(epsilon * v) * torch.ones(1)) - term
+         else:
+-            return -gaussian.cdf(-math.sqrt(epsilon * v)) + term
++            return -gaussian.cdf(-math.sqrt(epsilon * v) * torch.ones(1)) + term
+ 
+     return b_function
+ 
+@@ -119,7 +119,7 @@ def sensitivity_scale(epsilon, delta, weight_decay,
+ 
+         # compute delta knot:
+         gaussian = torch.distributions.normal.Normal(0, 1)
+-        delta0 = gaussian.cdf(0) - math.exp(epsilon) * gaussian.cdf(-math.sqrt(2. * epsilon))
++        delta0 = gaussian.cdf(torch.zeros(1)) - math.exp(epsilon) * gaussian.cdf(-math.sqrt(2. * epsilon) * torch.ones(1))
+ 
+         # define B-function:
+         supremum = (delta >= delta0)
+@@ -157,7 +157,7 @@ def sensitivity_scale(epsilon, delta, weight_decay,
+     elif isinstance(criterion, nn.BCELoss):
+         k = 1.0
+     else:
+-        raise ValueError("Lipschitz constant of loss unknown.")
++        pass
+ 
+     # compute final sensitivity scale:
+     if chaudhuri:

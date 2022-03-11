@@ -1,0 +1,6 @@
+[submodule "private_prediction"]
+	path = private_prediction
+	url = https://github.com/facebookresearch/private_prediction
+[submodule "Handcrafted-DP"]
+	path = Handcrafted-DP
+	url = https://github.com/ftramer/Handcrafted-DP
