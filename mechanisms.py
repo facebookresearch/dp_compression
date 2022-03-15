@@ -322,7 +322,7 @@ class MultinomialSamplingMechanism(CompressedMechanism):
         return mse_loss, bias_sq
     
 
-class RAPPORMechanism(MultinomialSamplingMechanism):
+class GeneralizedRRMechanism(MultinomialSamplingMechanism):
     
     def __init__(self, budget, epsilon, input_bits, norm_bound=0.5, p=None, **kwargs):
         super().__init__(budget, epsilon, budget, norm_bound, p, **kwargs)     # ignores input bits

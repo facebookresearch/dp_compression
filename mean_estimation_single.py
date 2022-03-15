@@ -84,8 +84,8 @@ if __name__ == "__main__":
     mechanism = RandomizedResponseMechanism(args.budget, args.epsilon)
     squared_errors_rr = 4 * compute_error(xs_normalized, mechanism, args.num_samples)
     
-    print("Running RAPPOR")
-    mechanism = RAPPORMechanism(args.budget, args.epsilon, args.budget)
+    print("Running Generalized RR")
+    mechanism = GeneralizedRRMechanism(args.budget, args.epsilon, args.budget)
     squared_errors_rappor = 4 * compute_error(xs_normalized, mechanism, args.num_samples)
     
     print("Running CLDP")
@@ -114,8 +114,8 @@ if __name__ == "__main__":
     
     plt.figure(figsize=(8,5))
     colors = sns.color_palette("deep")
-    plt.plot(xs, squared_errors_rr, label='RR', color=colors[6], linewidth=3)
-    plt.plot(xs, squared_errors_rappor, label='RAPPOR', color=colors[3], linewidth=3)
+    plt.plot(xs, squared_errors_rr, label='Bitwise RR', color=colors[6], linewidth=3)
+    plt.plot(xs, squared_errors_rappor, label='Generalized RR', color=colors[3], linewidth=3)
     plt.plot(xs, squared_errors_cldp, label='CLDP', color=colors[0], linewidth=3)
     plt.plot(xs, squared_errors_mvu_1bit, label='MVU ($b=1$)', color='lightgreen', linewidth=3)
     plt.plot(xs, squared_errors_mvu, label='MVU ($b=3$)', color=colors[2], linewidth=3)
