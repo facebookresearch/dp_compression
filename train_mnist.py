@@ -133,7 +133,7 @@ def clip_gradient(args, grad_vec):
     multiplier[grad_norm.gt(C)] = C / grad_norm[grad_norm.gt(C)]
     grad_vec *= multiplier.unsqueeze(1)
     if args.linf_clip > 0:
-        grad_vec.clamp_(-args.norm_clip, args.norm_clip)
+        grad_vec.clamp_(-args.linf_clip, args.linf_clip)
     return grad_vec
 
 
