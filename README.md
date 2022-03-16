@@ -1,7 +1,7 @@
 # Privacy-Aware Compression for Federated Data Analysis
 
 This repository contains code for reproducing results in the paper:
-- Kamalika Chaudhuri*, Chuan Guo*, Mike Rabbat. **[Privacy-Aware Compression for Federated Data Analysis](https://arxiv.org/abs/2200.00000)**.
+- Kamalika Chaudhuri*, Chuan Guo*, Mike Rabbat. **[Privacy-Aware Compression for Federated Data Analysis](https://arxiv.org/abs/2203.08134)**.
 
 ## Setup
 
