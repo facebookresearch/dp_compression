@@ -7,14 +7,15 @@ This repository contains code for reproducing results in the paper:
 
 Dependencies: [numpy](https://numpy.org/), [scipy](https://scipy.org/), [cvxpy](https://www.cvxpy.org/), [pytorch](https://pytorch.org/), [opacus](https://github.com/pytorch/opacus), [kymatio](https://github.com/kymatio/kymatio), [Handcrafted-DP](https://github.com/ftramer/Handcrafted-DP), [private_prediction](https://github.com/facebookresearch/private_prediction).
 
-After installing dependencies, run the install script to apply some patches.
+After cloning repo and installing dependencies (see `requirements.txt`), download submodules and run the install script to apply some patches.
 ```
+git submodule update --init
 python install.py
 ```
 
 ## Experiments
 
-### Scalar Distributed Mean Estimation
+### Scalar Distributed Mean Estimation (CPU only)
 
 ```
 for epsilon in 1 3 5; do
@@ -23,7 +24,7 @@ for epsilon in 1 3 5; do
 done
 ```
 
-### Vector Distributed Mean Estimation
+### Vector Distributed Mean Estimation (CPU only)
 
 For L1-sensitivity setting, first optimize the MVU mechanisms:
 ```
@@ -57,7 +58,9 @@ done
 python plot_dme_l2.py
 ```
 
-### DP-SGD Training
+**Note**: These experiments will take a few hours to run.
+
+### DP-SGD Training (requires GPU)
 
 
 To run the DP-SGD training experiment, first optimize the MVU mechanism:
