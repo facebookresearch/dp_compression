@@ -77,4 +77,4 @@ See appendix in our paper for the full grid of hyperparameter values.
 
 ## Code Acknowledgements
 
-The majority of Privacy-Aware Data Compression is licensed under CC-BY-NC, however portions of the project are available under separate license terms: CVXPY and Opacus are licensed under the Apache 2.0 license; Kymatio is licensed under the BSD license; and Handcrafted-DP is licensed under the MIT license. If you later add other third party code, please keep this license info updated, and please let us know if that component is licensed under something other than Apache, BSD, MIT, or CC0.
+The majority of Privacy-Aware Data Compression is licensed under CC-BY-NC, however portions of the project are available under separate license terms: CVXPY and Opacus are licensed under the Apache 2.0 license; Kymatio is licensed under the BSD license; and Handcrafted-DP is licensed under the MIT license.
