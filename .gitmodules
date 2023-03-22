@@ -4,3 +4,6 @@
 [submodule "Handcrafted-DP"]
 	path = Handcrafted-DP
 	url = https://github.com/ftramer/Handcrafted-DP
+[submodule "fastwht"]
+	path = fastwht
+	url = git@github.com:vegarant/fastwht.git

@@ -1,11 +1,3 @@
-#!/usr/bin/env python3
-#
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-#
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
-
 import math
 import random
 import numpy as np
@@ -13,8 +5,8 @@ from abc import abstractmethod
 import scipy
 from scipy.stats import skellam
 import scipy.optimize as optimize
-from scipy import sparse
-from scipy.special import gamma
+from scipy import sparse, optimize
+from scipy.special import gamma, softmax
 import cvxpy
 import pdb
 from scipy.sparse.csr import csr_matrix
@@ -22,6 +14,11 @@ from tqdm import tqdm
 import os
 from datetime import datetime
 import pickle
+from utils import optimal_scaling_integer, FWHTRandomProjector
+import time
+from opacus.accountants import RDPAccountant
+from typing import Callable, List, Optional, Union, Tuple
+from opacus.accountants.analysis import rdp as privacy_analysis
 
 
 class CLDPMechanism:
@@ -123,17 +120,38 @@ class SkellamMechanism:
     Skellam mechanism from https://arxiv.org/pdf/2110.04995.pdf.
     '''
     
-    def __init__(self, budget, d, norm_bound, mu, s, p=None):
+    def __init__(self, budget, d, norm_bound, mu, num_clients=1):
         self.budget = budget
-        self.d = int(math.pow(2, math.ceil(math.log2(d))))
+        self.d = d
+        self.expanded_d = int(math.pow(2, math.ceil(math.log2(d))))
         self.norm_bound = norm_bound
         self.mu = mu
-        self.s = s
-        self.p = p
+        self.s = self.compute_s(num_clients)
+        print("s = %.2f" % self.s)
+        self.scale = optimal_scaling_integer(self.expanded_d, self.s * norm_bound, math.exp(-0.5), tol=1e-3)
+        if self.scale == 0:
+            raise RuntimeError("Did not find suitable scale factor; try increasing communication budget")
         self.clip_min = -int(math.pow(2, budget - 1))
         self.clip_max = int(math.pow(2, budget - 1)) - 1
-        self.D = np.sign(np.random.normal(0, 1, (d,)))
+        self.projector = FWHTRandomProjector(self.d, self.expanded_d)
         return
+    
+    def compute_s(self, num_clients, k=3, rho=1, DIV_EPSILON=1e-22):
+        """
+        Adapted from https://github.com/google-research/federated/blob/master/distributed_dp/accounting_utils.py
+        """
+        def mod_min(gamma):
+            var = rho / self.d * (num_clients * self.norm_bound)**2
+            var += (gamma**2 / 4 + self.mu) * num_clients
+            return k * math.sqrt(var)
+
+        def gamma_opt_fn(gamma):
+            return (math.pow(2, self.budget) - 2 * mod_min(gamma) / (gamma + DIV_EPSILON))**2
+
+        gamma_result = optimize.minimize_scalar(gamma_opt_fn)
+        if not gamma_result.success:
+            raise ValueError('Cannot compute scaling factor.')
+        return 1. / gamma_result.x
     
     def renyi_div(self, alphas, l1_norm_bound=None, l2_norm_bound=None):
         """
@@ -142,7 +160,7 @@ class SkellamMechanism:
         if l2_norm_bound is None:
             l2_norm_bound = self.norm_bound
         if l1_norm_bound is None:
-            l1_norm_bound = self.norm_bound * min(math.sqrt(self.d), self.norm_bound)
+            l1_norm_bound = self.norm_bound * min(math.sqrt(self.expanded_d), self.norm_bound)
         epsilons = np.zeros(alphas.shape)
         B1 = 3 * l1_norm_bound / (2 * self.s ** 3 * self.mu ** 2)
         B2 = 3 * l1_norm_bound / (2 * self.s * self.mu)
@@ -158,25 +176,46 @@ class SkellamMechanism:
         prob = 1 - (x - k)
         while True:
             output = k + (np.random.random(k.shape) > prob)
-            if self.p is None or np.linalg.norm(output, self.p) <= self.s * self.norm_bound:
+            if np.linalg.norm(output, 2) <= self.s * self.norm_bound:
                 break
         return output.astype(int)
     
     def privatize(self, x):
-        assert np.linalg.norm(x, 2) <= self.norm_bound + 1e-8
-        assert len(x) <= self.d
-        z = np.zeros(self.d)
-        z[:len(x)] = self.s * x
-        H = scipy.linalg.hadamard(self.d) / math.sqrt(self.d)
-        z = H @ (self.D * z)
-        z = self.dither(z)
-        z += skellam.rvs(self.s ** 2 * self.mu, self.s ** 2 * self.mu, size=z.shape)
+        assert np.all(np.linalg.norm(x, 2, 1) <= self.norm_bound + 1e-4)
+        assert x.shape[1] == self.d
+        z = np.zeros((x.shape[0], self.expanded_d))
+        for i in range(x.shape[0]):
+            z[i] = self.dither(self.projector.project(self.s * x[i]))
+        z += skellam.rvs(self.s**2 * self.mu, self.s**2 * self.mu, size=z.shape)
         z = np.mod(z - self.clip_min, self.clip_max - self.clip_min) + self.clip_min
         return z
     
     def decode(self, z):
-        H = scipy.linalg.hadamard(self.d) / math.sqrt(self.d)
-        return (self.D * (H.T @ z)) / self.s
+        x = np.zeros((z.shape[0], self.d))
+        for i in range(z.shape[0]):
+            x[i] = self.projector.inverse(z[i].astype(float)) / self.s
+        return x
+
+
+class SkellamAccountant(RDPAccountant):
+    
+    def __init__(self, orders, renyi_div_bounds):
+        super().__init__()
+        self.alphas = orders
+        self.renyi_div_bounds = renyi_div_bounds
+        
+    def get_privacy_spent(
+        self, *, delta: float, alphas: Optional[List[Union[float, int]]] = None
+    ) -> Tuple[float, float]:
+        if not self.history:
+            return 0, 0
+
+        # MVU accountant does not yet support subsampling and different noise multipliers
+        rdp = sum([self.renyi_div_bounds * num_steps for (_, _, num_steps) in self.history])
+        eps, best_alpha = privacy_analysis.get_privacy_spent(
+            orders=self.alphas, rdp=rdp, delta=delta
+        )
+        return float(eps), float(best_alpha)
 
 
 class CompressedMechanism:
@@ -305,7 +344,7 @@ class MultinomialSamplingMechanism(CompressedMechanism):
         return z
     
     def decode(self, z):
-        assert z.max() < 2**self.budget
+        assert z.min() >= 0 and z.max() < 2**self.budget
         return self.alpha[z.astype(int)]
     
     def mse_and_bias_squared(self, P=None, alpha=None):
@@ -322,7 +361,7 @@ class MultinomialSamplingMechanism(CompressedMechanism):
         return mse_loss, bias_sq
     
 
-class GeneralizedRRMechanism(MultinomialSamplingMechanism):
+class RAPPORMechanism(MultinomialSamplingMechanism):
     
     def __init__(self, budget, epsilon, input_bits, norm_bound=0.5, p=None, **kwargs):
         super().__init__(budget, epsilon, budget, norm_bound, p, **kwargs)     # ignores input bits
@@ -346,7 +385,7 @@ class MVUMechanism(MultinomialSamplingMechanism):
     # ==================================
     # Functions used by multiple methods
     # ==================================
-    def _get_dp_constraint_matrix(self, dp_constraint):
+    def _get_dp_constraint_matrix(self, dp_constraint, sparsity=0):
         """
         Returns a sparse matrix D with shape (B*B*(B-1), B*B) such that D @ p
         corresponds to the left-hand side of the DP constraints on P,
@@ -357,25 +396,44 @@ class MVUMechanism(MultinomialSamplingMechanism):
         Each row of D bounds the probability ratio between P_{i,j} and P_{i',j}
         by e^epsilon for i != i'. For metric DP, the ratio is e^{epsilon * abs(i - i')}.
         """
+        print(f"sparsity = {sparsity}")
         B_in = 2 ** self.input_bits
         B_out = 2 ** self.budget
-        if dp_constraint == "strict":
-            data = -math.exp(self.epsilon) * np.ones(B_in*(B_in-1))
-        elif dp_constraint == "metric-l1" or dp_constraint == "metric-l2":
-            data = np.absolute(np.arange(0, B_in)[:, None] - np.arange(0, B_in)[None, :]).reshape(B_in*B_in,) / (B_in-1)
-            if dp_constraint == "metric-l2":
-                data = np.power(data, 2)
-            data = -np.exp(self.epsilon * data[data>0])
+        assert sparsity >= 0 and sparsity < B_in
+        if sparsity == 0:
+            if dp_constraint == "strict":
+                data = -math.exp(self.epsilon) * np.ones(B_in*(B_in-1))
+            elif dp_constraint == "metric-l1" or dp_constraint == "metric-l2":
+                data = np.absolute(np.arange(0, B_in)[:, None] - np.arange(0, B_in)[None, :]).reshape(B_in*B_in,) / (B_in-1)
+                if dp_constraint == "metric-l2":
+                    data = np.power(data, 2)
+                data = -np.exp(self.epsilon * data[data>0])
+            else:
+                raise RuntimeError("Unknown DP constraint: " + str(dp_constraint))
+            row_indices = np.arange(0, B_in*(B_in-1)).astype(int)
+            col_indices = np.floor(np.arange(0, B_in*(B_in-1)) / (B_in-1)).astype(int)
+            coeffs = sparse.csr_matrix((data, (row_indices, col_indices)), shape=(B_in*(B_in-1), B_in))
+            D = sparse.kron(coeffs, sparse.eye(B_out))     # matrix of -e^{epsilons}s at all (i',j) positions
+            E = sparse.csr_matrix(
+                (np.ones(B_in), (np.arange(0, B_in*B_in, B_in+1).astype(int), np.arange(0, B_in).astype(int))), shape=(B_in*B_in, B_in))
+            F = sparse.kron(np.ones(B_in)[:, None], sparse.eye(B_in*B_out)) - sparse.kron(E, sparse.eye(B_out))
+            D += F[F.getnnz(1)>0]                      # add to D a matrix of 1s at all (i,j) positions
         else:
-            raise RuntimeError("Unknown DP constraint: " + str(dp_constraint))
-        row_indices = np.arange(0, B_in*(B_in-1)).astype(int)
-        col_indices = np.floor(np.arange(0, B_in*(B_in-1)) / (B_in-1)).astype(int)
-        coeffs = sparse.csr_matrix((data, (row_indices, col_indices)), shape=(B_in*(B_in-1), B_in))
-        D = sparse.kron(coeffs, sparse.eye(B_out))     # matrix of -e^{epsilons}s at all (i',j) positions
-        E = sparse.csr_matrix(
-            (np.ones(B_in), (np.arange(0, B_in*B_in, B_in+1).astype(int), np.arange(0, B_in).astype(int))), shape=(B_in*B_in, B_in))
-        F = sparse.kron(np.ones(B_in)[:, None], sparse.eye(B_in*B_out)) - sparse.kron(E, sparse.eye(B_out))
-        D += F[F.getnnz(1)>0]                      # add to D a matrix of 1s at all (i,j) positions
+            D = []
+            for s in range(1, sparsity + 1):
+                E = np.concatenate([np.eye(B_in-s), np.zeros((B_in-s, s))], 1)
+                F = np.concatenate([np.zeros((B_in-s, s)), np.eye(B_in-s)], 1)
+                if dp_constraint == "strict":
+                    epsilon = self.epsilon
+                elif dp_constraint == "metric-l1":
+                    epsilon = self.epsilon * s / (B_in - 1)
+                elif dp_constraint == "metric-l2":
+                    epsilon = self.epsilon * s**2 / (B_in - 1) ** 2
+                else:
+                    raise RuntimeError("Unknown DP constraint: " + str(dp_constraint))
+                D.append(E - math.exp(epsilon) * F)
+                D.append(F - math.exp(epsilon) * E)
+            D = sparse.kron(sparse.csr_matrix(np.concatenate(D, 0)), sparse.eye(B_out))
         return D
     
     def _get_row_stochastic_constraint_matrix(self):
@@ -411,7 +469,7 @@ class MVUMechanism(MultinomialSamplingMechanism):
     # ===================
     # Penalized LP method
     # ===================
-    def _optimize_penalized_lp(self, objective="squared", dp_constraint="strict", lam=0, num_iters=1, verbose=False):
+    def _optimize_penalized_lp(self, objective="squared", dp_constraint="strict", sparsity=0, lam=0, num_iters=1, verbose=False):
         """
         Estimate the optimal design by alternating between:
             a) Fixing alpha and solving for P, where the unbiased constraints are incorporated as a penalty in the objective,
@@ -426,9 +484,16 @@ class MVUMechanism(MultinomialSamplingMechanism):
         # Row-stochastic equality constraints: A_eq @ p == b_eq
         A_eq = self._get_row_stochastic_constraint_matrix()
         b_eq = np.ones(B_in)
+        # Enforce symmetric P if input_bits is 1
+        if self.input_bits == 1:
+            A_sym = np.concatenate([np.eye(B_out), -np.fliplr(np.eye(B_out))], 1)
+            A_sym = sparse.csr_matrix(A_sym)
+            b_sym = np.zeros(B_out)
+            A_eq = sparse.vstack([A_eq, A_sym])
+            b_eq = np.concatenate([b_eq, b_sym], 0)
 
         # DP inequality constraints: A_ineq @ p <= 0
-        A_ineq = self._get_dp_constraint_matrix(dp_constraint)
+        A_ineq = self._get_dp_constraint_matrix(dp_constraint, sparsity=sparsity)
         b_ineq = np.zeros(A_ineq.shape[0])
         P = None
         
@@ -480,7 +545,7 @@ class MVUMechanism(MultinomialSamplingMechanism):
     # ===========================================
     # Alternative method and supporting functions
     # ===========================================
-    def _solve_lp_for_P(self, alpha, dp_constraint, verbose=False):
+    def _solve_lp_for_P(self, alpha, dp_constraint, sparsity, verbose=False):
         B_in = 2 ** self.input_bits
         B_out = 2 ** self.budget
         assert len(alpha) == B_out
@@ -490,7 +555,7 @@ class MVUMechanism(MultinomialSamplingMechanism):
         c = self._get_lp_costs(alpha)
         objective = cvxpy.Minimize(c.T @ p)
         # DP constraints
-        D = self._get_dp_constraint_matrix(dp_constraint)
+        D = self._get_dp_constraint_matrix(dp_constraint, sparsity)
         # Unbiased constraints
         A = sparse.kron(sparse.eye(B_in), alpha)
         # Row-stochastic constraint
@@ -540,14 +605,14 @@ class MVUMechanism(MultinomialSamplingMechanism):
                 print(f"Max ordering constraint violation is {np.max(constraints[1].violation())}")
         return alpha.value, prob.value
 
-    def _run_one_init(self, num_iters, verbose, alphainit, dp_constraint):
+    def _run_one_init(self, num_iters, verbose, alphainit, dp_constraint, sparsity):
         B_in = 2 ** self.input_bits
         B_out = 2 ** self.budget
         target = np.arange(0, 1+1/B_in, 1/(B_in-1))
         # Initialize a feasible alpha
         alpha = np.linspace(alphainit[0], alphainit[1], num=B_out, endpoint=True)
         for iter in range(num_iters):
-            P, value = self._solve_lp_for_P(alpha, dp_constraint, verbose=verbose)
+            P, value = self._solve_lp_for_P(alpha, dp_constraint, sparsity, verbose=verbose)
             if value < math.inf:
                 alpha, value = self._solve_qp_for_alpha(P, verbose=verbose)
                 mse_loss, bias_sq = self.mse_and_bias_squared(P, alpha)
@@ -559,7 +624,7 @@ class MVUMechanism(MultinomialSamplingMechanism):
                     iter+1, mse_loss, bias_sq))
         return P, alpha, value
     
-    def _optimize_alt(self, objective="squared", dp_constraint="strict", num_iters=1, verbose=False, alphainit=None, num_inits=10, Delta=1.0):
+    def _optimize_alt(self, objective="squared", dp_constraint="strict", sparsity=0, num_iters=1, verbose=False, alphainit=None, num_inits=10, Delta=1.0):
         if objective != "squared":
             raise RuntimeError("Unsupported objective: " + str(objective))
         
@@ -575,7 +640,7 @@ class MVUMechanism(MultinomialSamplingMechanism):
                 alphainit = (0.0 - delta, 1.0 + delta)
                 if verbose:
                     print(f"Trying with alphainit={alphainit}") if verbose else None
-                P, alpha, value = self._run_one_init(num_iters, verbose, alphainit, dp_constraint)
+                P, alpha, value = self._run_one_init(num_iters, verbose, alphainit, dp_constraint, sparsity)
                 if value < math.inf:
                     mse_loss, bias_sq = self.mse_and_bias_squared(P, alpha)
                 else:
@@ -597,7 +662,7 @@ class MVUMechanism(MultinomialSamplingMechanism):
             P, alpha = best_P, best_alpha
         else:
             # Just run for the one value provided in alphainit
-            P, alpha, value = self._run_one_init(num_iters, verbose, alphainit, dp_constraint)
+            P, alpha, value = self._run_one_init(num_iters, verbose, alphainit, dp_constraint, sparsity)
             if value == math.inf:
                 print(f"Did not find a feasible solution for alphainit={alphainit}")
         mse_loss, bias_sq = self.mse_and_bias_squared(P, alpha)
@@ -732,10 +797,10 @@ class MVUMechanism(MultinomialSamplingMechanism):
         lb[B_in*B_out:] = -np.inf
         return optimize.Bounds(lb, ub)
     
-    def _get_dp_constraint(self, dp_constraint):
+    def _get_dp_constraint(self, dp_constraint, sparsity):
         B_in = 2 ** self.input_bits
         B_out = 2 ** self.budget
-        D = self._get_dp_constraint_matrix(dp_constraint)
+        D = self._get_dp_constraint_matrix(dp_constraint, sparsity)
         num_dp_constraints = D.shape[0]
         # This constraint gets applied to the full parameter vector;
         # pad with zeros to get the right shape
@@ -808,13 +873,13 @@ class MVUMechanism(MultinomialSamplingMechanism):
         )
         return unbiased_constraint
     
-    def _get_constraints(self, dp_constraint):
-        dp_constraint = self._get_dp_constraint(dp_constraint)
+    def _get_constraints(self, dp_constraint, sparsity):
+        dp_constraint = self._get_dp_constraint(dp_constraint, sparsity)
         row_constraint = self._get_row_constraint()
         unbiased_constraint = self._get_unbiased_constraint()
         return [dp_constraint, row_constraint, unbiased_constraint]
 
-    def _optimize_tr(self, objective="squared", dp_constraint="strict", maxiter=5000, verbose=False, init_method="random"):
+    def _optimize_tr(self, objective="squared", dp_constraint="strict", sparsity=0, maxiter=5000, verbose=False, init_method="random"):
         if objective != "squared":
             raise RuntimeError("Unsupported objective: " + str(objective))
 
@@ -827,7 +892,7 @@ class MVUMechanism(MultinomialSamplingMechanism):
         objective, jac, hess = self._get_objective()
         x0 = self._get_x0(verbose=verbose, dp_constraint=dp_constraint, init_method=init_method)
         bounds = self._get_bounds()
-        constraints = self._get_constraints(dp_constraint)
+        constraints = self._get_constraints(dp_constraint, sparsity)
         self.log = TRLoggerCallback(x0, self.budget, self.epsilon, self.input_bits, init_method, dp_constraint)
 
         result = optimize.minimize(
@@ -871,6 +936,26 @@ class MVUMechanism(MultinomialSamplingMechanism):
         else:
             raise RuntimeError(f"Unrecognized method `{method}`. Valid options are penalized-lp, alt, and trust-region.")
 
+            
+class InterpolatedMVUMechanism:
+    
+    def __init__(self, budget, p, alpha):
+        self.budget = budget
+        assert len(p) == 2**budget
+        self.p = p
+        self.eta1 = np.log(p)
+        self.eta2 = self.eta1[::-1]
+        self.alpha = alpha
+    
+    def privatize(self, x):
+        P = softmax((1 - x[:, None]) * self.eta1[None, :] + x[:, None] * self.eta2[None, :], axis=1)
+        z = np.array([np.random.choice(P.shape[1], p=P[i]) for i in range(P.shape[0])])
+        return z
+    
+    def decode(self, z):
+        assert z.min() >= 0 and z.max() < 2**self.budget
+        return self.alpha[z.astype(int)]
+            
 
 class TRLoggerCallback:
     """
@@ -927,7 +1012,7 @@ def save_mechanism(mechanism, path):
         pickle.dump(mechanism, f)
 
 
-def load_mechanism(path):
+def load_mechanism(path, consolidate=False):
     """
     Load a mechanism from disk.
     """

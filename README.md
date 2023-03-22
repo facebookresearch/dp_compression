@@ -1,16 +1,19 @@
 # Privacy-Aware Compression for Federated Data Analysis
 
-This repository contains code for reproducing results in the paper:
+This repository contains code for reproducing results in the papers:
 - Kamalika Chaudhuri*, Chuan Guo*, Mike Rabbat. **[Privacy-Aware Compression for Federated Data Analysis](https://arxiv.org/abs/2203.08134)**.
+- Chuan Guo, Kamalika Chaudhuri, Pierre Stock, Mike Rabbat. **[Privacy-Aware Compression for Federated Learning Through Numerical Mechanism Design](https://arxiv.org/abs/2211.03942)**.
 
 ## Setup
 
-Dependencies: [numpy](https://numpy.org/), [scipy](https://scipy.org/), [cvxpy](https://www.cvxpy.org/), [pytorch](https://pytorch.org/), [opacus](https://github.com/pytorch/opacus), [kymatio](https://github.com/kymatio/kymatio), [Handcrafted-DP](https://github.com/ftramer/Handcrafted-DP), [private_prediction](https://github.com/facebookresearch/private_prediction).
+Dependencies: [numpy](https://numpy.org/), [scipy](https://scipy.org/), [cvxpy](https://www.cvxpy.org/), [pytorch](https://pytorch.org/), [opacus](https://github.com/pytorch/opacus), [kymatio](https://github.com/kymatio/kymatio), [Handcrafted-DP](https://github.com/ftramer/Handcrafted-DP), [private_prediction](https://github.com/facebookresearch/private_prediction), [fastwht](https://github.com/vegarant/fastwht).
 
 After cloning repo and installing dependencies (see `requirements.txt`), download submodules and run the install script to apply some patches.
 ```
 git submodule update --init
 python install.py
+cd fastwht/python
+./setup.sh
 ```
 
 ## Experiments
@@ -66,15 +69,18 @@ python plot_dme_l2.py
 To run the DP-SGD training experiment, first optimize the MVU mechanism:
 ```
 python optimize_mvu.py --input_bits 9 --budget 1 --epsilon <epsilon> --dp_constraint metric-l1 --method penalized
+python optimize_mvu.py --input_bits 1 --budget 1 --epsilon <epsilon> --dp_constraint metric-l1 --method penalized
 ```
-Then run DP-SGD training with Gaussian mechanism, signSGD, and MVU:
+Then run DP-SGD training with Gaussian mechanism, signSGD, Skellam, MVU and I-MVU:
 ```
-python train_mnist.py --save-model --dataset mnist --model <convnet/linear> --quantization 0 --epochs <epochs> --sigma <sigma> --lr <lr> --norm-clip <norm_clip>
-python train_mnist.py --save-model --dataset mnist --model <convnet/linear> --quantization 1 --epochs <epochs> --sigma <sigma> --lr <lr> --norm-clip <norm_clip>
-python train_mnist.py --save-model --dataset mnist --model <convnet/linear> --mechanism mvu --quantization 1 --linf-multiplier 1 --epochs <epochs> --epsilon <epsilon> --lr <lr> --norm-clip <norm_clip>
+python train.py --save-model --dataset mnist --model <convnet/linear> --mechanism gaussian --quantization 0 --epochs <epochs> --scale <sigma> --lr <lr> --norm-clip <norm_clip>
+python train.py --save-model --dataset mnist --model <convnet/linear> --mechanism gaussian --quantization 1 --epochs <epochs> --scale <sigma> --lr <lr> --norm-clip <norm_clip>
+python train.py --save-model --dataset mnist --model <convnet/linear> --mechanism skellam --quantization 16 --epochs <epochs> --scale <sigma> --lr <lr> --norm-clip <norm_clip>
+python train.py --save-model --dataset mnist --model <convnet/linear> --mechanism mvu --input-bits 9 --quantization 1 --beta 1 --epochs <epochs> --epsilon <epsilon> --lr <lr> --norm-clip <norm_clip>
+python train.py --save-model --dataset mnist --model <convnet/linear> --mechanism mvu_l2 --input-bits 1 --quantization 1 --beta 1 --epochs <epochs> --epsilon <epsilon> --lr <lr> --norm-clip <norm_clip>
 ```
-See appendix in our paper for the full grid of hyperparameter values.
+To train on CIFAR-10, simply replace `--dataset mnist` by `--dataset cifar10`. See appendix in our paper for the full grid of hyperparameter values.
 
 ## Code Acknowledgements
 
-The majority of Privacy-Aware Data Compression is licensed under CC-BY-NC, however portions of the project are available under separate license terms: CVXPY and Opacus are licensed under the Apache 2.0 license; Kymatio is licensed under the BSD license; and Handcrafted-DP is licensed under the MIT license.” If you later add other third party code, please keep this license info updated, and please let us know if that component is licensed under something other than Apache, BSD, MIT, or CC0.
+The majority of Privacy-Aware Compression is licensed under CC-BY-NC, however portions of the project are available under separate license terms: CVXPY and Opacus are licensed under the Apache 2.0 license; Kymatio is licensed under the BSD license; and Handcrafted-DP is licensed under the MIT license.” If you later add other third party code, please keep this license info updated, and please let us know if that component is licensed under something other than Apache, BSD, MIT, or CC0.

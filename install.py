@@ -30,10 +30,6 @@ RESNET_FILES = {
     "resnet.py": "resnet.py",
 }
 
-HANDCRAFTED_FILES = {
-    "data.py": "data.py",
-}
-
 PP_FILES = {
     "private_prediction.py": "private_prediction.py",
 }
@@ -41,9 +37,6 @@ PP_FILES = {
 
 def main():
     
-    for filename in HANDCRAFTED_FILES.values():
-        patch_filename = filename.replace(".py", ".patch")
-        os.system(f"patch Handcrafted-DP/{filename} patches/{patch_filename}")
     for filename in PP_FILES.values():
         patch_filename = filename.replace(".py", ".patch")
         os.system(f"patch private_prediction/{filename} patches/{patch_filename}")
