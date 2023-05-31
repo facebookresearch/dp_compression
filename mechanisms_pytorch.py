@@ -94,8 +94,8 @@ class SkellamMechanismPyTorch:
         z = torch.zeros(x.size()).long().to(self.device)
         for i in range(x.shape[0]):
             z[i] = self.dither(self.s * x[i])
-        dist = torch.distributions.poisson.Poisson(self.s**2 * self.mu)
-        z += (dist.sample(z.size()) - dist.sample(z.size())).long().to(self.device)
+        scale = self.s**2 * self.mu * torch.ones_like(z)
+        z += (torch.poisson(scale) - torch.poisson(scale)).long()
         z = torch.remainder(z - self.clip_min, self.clip_max - self.clip_min) + self.clip_min
         return z
     
